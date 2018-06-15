@@ -66,6 +66,9 @@ class CubeSatAutomation(object):
 			print "Closing socket connection"
 			CubeSatAutomation.sock.shutdown(socket.SHUT_RDWR)
 			CubeSatAutomation.sock.close()
+			CubeSatAutomation.sock = None
+			CubeSatAutomation.server = None
+			CubeSatAutomation.port = 0
 		else:
 			print "No socket connection initialized!"
 
@@ -95,15 +98,19 @@ class CubeSatAutomation(object):
 			Any program that stays alive and doesn't exit after tests have finished
 			is a problem for the subsequent tests against the same program.
 		'''
-		self.close_socket()
-		CubeSatAutomation.proc.terminate() 	# Doesn't close the program properly in some cases!
-
+		if CubeSatAutomation.sock:
+			self.close_socket()
+		if CubeSatAutomation.proc:
+			CubeSatAutomation.proc.terminate() 	# Doesn't close the program properly in some cases!
+		time.sleep(2)
 		if os.getpgid(CubeSatAutomation.proc.pid):
 			print "Clean termination of the program wasn't successful."
 			print "Attempting to terminate from OS.."
 			pid = os.getpgid(CubeSatAutomation.proc.pid)
 			kill_command = "kill -15 " + "-" + str(pid)
-			subprocess.Popen([str(kill_command)], shell=True)	
+			subprocess.Popen([str(kill_command)], shell=True)
+
+		CubeSatAutomation.proc = None	
 
 	def remote_program_start(self, prog, server, port=22, 
 						user=None, passw=None, config_file=None, wait_time=5):
@@ -133,7 +140,11 @@ class CubeSatAutomation(object):
 			Simply closes the socket and as get_pty was used, the program should
 			terminate on the remote system.
 		'''
-		CubeSatAutomation.ssh.close()
+		if CubeSatAutomation.ssh:
+			CubeSatAutomation.ssh.close()
+			CubeSatAutomation.ssh = None
+		else:
+			print "No SSH connection initialized!"
 
 	def _send_socket(self, message):
 		''' Send message through socket connection
@@ -175,8 +186,6 @@ class CubeSatAutomation(object):
 		console_lines = str(console_lines).split("\\n")
 		if "Store" in str(option):
 			CubeSatAutomation.reply_buffer = console_lines
-			print "Console lines"
-			print CubeSatAutomation.reply_buffer
 
 	def write_command(self, message, option="Store", timeout=2, read_timeout=2):
 		'''	Send commands to the program via standard input
@@ -187,8 +196,6 @@ class CubeSatAutomation(object):
 		console_lines = str(console_lines).split("\\n")		
 		if "Store" in str(option):
 			CubeSatAutomation.reply_buffer = console_lines
-			print "Console lines"
-			print CubeSatAutomation.reply_buffer
 
 	def type_command(self, message, option="Store", timeout=2, read_timeout=2):
 		'''	Send commands to the program by simulating typing on a keyboard
@@ -205,8 +212,6 @@ class CubeSatAutomation(object):
 		console_lines = str(console_lines).split("\\n")		
 		if "Store" in str(option):
 			CubeSatAutomation.reply_buffer = console_lines
-			print "Console lines"
-			print CubeSatAutomation.reply_buffer
 
 	def _read_socket(self, timeout=5, read_timeout=5):
 		''' Read messages through the socket
@@ -317,37 +322,6 @@ class CubeSatAutomation(object):
 		'''
 		CubeSatAutomation.reply_buffer = ""
 
-	def _save_program_replies_thread(self, filename, timeout=10, read_timeout=5):
-		"""	Write the replies to a file
-		"""
-		time_count = 0
-		while time_count < int(timeout):
-			if CubeSatAutomation.writing is False:
-				try:	
-					f = open(str(filename), 'a')	# Creates a new file if the old one was moved already 
-				except IOError:
-					raise IOError ("Couldn't open %s" % str(filename)) 	# Joku jarki? Except ja Raise
-				console_lines = []
-				console_lines = self._receive(int(timeout), int(read_timeout))
-				time_count = time_count + int(read_timeout)
-				f.writelines(console_lines)
-				f.close()
-				CubeSatAutomation.writing = True	# Lock the file, implement a proper lock
-			else:
-				time.sleep(1)
-				time_count = time_count + 1
-			if CubeSatAutomation.writing_done is True:
-				CubeSatAutomation.writing = False
-				CubeSatAutomation.writing_done = False
-				break
-
-	def save_program_replies(self, filename, timeout=5, read_timeout=20):
-		''' Save replies to a file
-			Starts a thread that records replies from the system under test
-			and saves them to a file.
-		'''
-		thread.start_new_thread(self._save_program_replies_thread, (filename, timeout, read_timeout))
-
 	def verify_reply_contains(self, message, timeout=5, read_timeout=10):
 		''' Read messages from the standard output/socket
 			Verify that the specified message is received.
@@ -429,52 +403,6 @@ class CubeSatAutomation(object):
 		if not found:
 			print console_lines				
 			raise ValueError ("Message %s was not found in the process replies!\n" % str(message))
-
-	def verify_saved_reply(self, message, filename, timeout=30):
-		''' Check if a desired reply is found from the replies stored to a file
-			The file moving stuff is quite odd in this keyword
-		'''
-		completed = False
-		time_count = 0
-		while not completed:
-			time_count = time_count + 1
-			time.sleep(1)
-			if time_count > int(timeout):
-				print "Time count is larger? " + str(time_count) + " " + str(timeout)
-				CubeSatAutomation.writing = False
-				CubeSatAutomation.writing_done = True
-				completed = True
-				break
-			if CubeSatAutomation.writing is True:
-				try:
-					f = open(str(filename), 'r')
-				except IOError:
-					raise IOError ("Couldn't open %s" % str(filename))
-				console_lines = f.readlines()
-				for line in console_lines:
-					if str(message) in line:
-						f.close()
-						CubeSatAutomation.writing = False
-						CubeSatAutomation.writing_done = True
-						completed = True
-						break
-				f.close()
-				CubeSatAutomation.writing = False	# Free the file
-				#CubeSatAutomation.writing_done = True
-			else:
-				continue
-		if completed:
-			try:
-				f = open(str(filename), 'r')
-			except IOError:
-				print "Verifying couldn't open %s\n" % str(filename)
-			console_lines = f.readlines()			
-		f.close()
-		# Rename and move file
-		new_filename = str(os.getcwd()) + "/stored_messages/"  + str(filename) + "_" + str(time.time())	# Unix time
-		os.rename(str(filename), new_filename)	
-		if time_count > int(timeout):
-			raise ValueError("Message %s was not found in the stored process replies!\n" % str(message))	
             
 	def persistent_command(self, message, exception_replies, 
 						end_reply="None", timeout=5, read_timeout=2):
@@ -497,8 +425,6 @@ class CubeSatAutomation(object):
 			CubeSatAutomation.reply_buffer = console_lines
 			for line in console_lines:
 				for exception_reply in exception_replies:
-					print "exception_reply:" + str(exception_reply)
-					print "reply line:" + str(line)
 					if str(exception_reply) in str(line):
 						print "Exception %s found, retrying to send command" % str(exception_reply)
 						self._communicate(str(message))
@@ -527,7 +453,5 @@ class CubeSatAutomation(object):
 			console_lines = str(console_lines).split("\\n")
 			CubeSatAutomation.reply_buffer = console_lines			
 			for line in console_lines:
-					print "exception_reply:" + str(exception_reply)
-					print "reply line:" + str(line)
 					if str(exception_reply) in str(line):
 						raise ValueError ("Exception %s still found after timeout" % str(exception_reply)) 				
